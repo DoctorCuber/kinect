@@ -1,0 +1,25 @@
+# Python environment and caches
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.cache/
+
+# Editor, agent, and skill files
+.agents/
+.cursor/
+skills-lock.json
+
+# Recordings, training pictures, the trained model, and local settings
+clips/
+dataset/
+models/
+settings.json
+
+# Windows junk
+Thumbs.db
+Desktop.ini

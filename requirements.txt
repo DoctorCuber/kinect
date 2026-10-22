@@ -1,0 +1,10 @@
+# Torch is installed by setup_runtime.py from the NVIDIA CUDA wheel index.
+# Leaving it out of this file keeps that index from replacing the normal one.
+comtypes>=1.4.0
+customtkinter>=5.2.2
+numpy>=1.26
+fpdf2>=2.8.0
+opencv-python>=4.10
+openvino>=2026.0
+packaging>=24.0
+pykinect2>=0.1.0
