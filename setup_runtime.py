@@ -21,11 +21,63 @@ TORCH_PACKAGES = ("torch==2.14.1+cu130", "torchvision==0.29.1+cu130")
 TORCH_INDEX = "https://download.pytorch.org/whl/cu130"
 
 
-def ensure() -> None:
-    """Install into .venv when needed, then restart the script with that Python."""
-    if os.environ.get("KINECT_SETUP_CHILD") == "1":
+_splash = None
+_splash_label = None
+
+
+def show_splash() -> None:
+    """A small window that appears while the heavier libraries load."""
+    global _splash, _splash_label
+    if _splash is not None:
         return
-    if _ready():
+    import tkinter as tk
+
+    window = tk.Tk()
+    window.title("Opening Kinect")
+    window.geometry("440x150")
+    window.resizable(False, False)
+    window.attributes("-topmost", True)
+    label = tk.Label(
+        window,
+        text="Opening the Kinect window.\nThis can take a minute.",
+        font=("Segoe UI", 13),
+        justify="center",
+    )
+    label.pack(expand=True, fill="both", padx=24, pady=24)
+    window.update_idletasks()
+    width = window.winfo_width()
+    height = window.winfo_height()
+    x = max(0, (window.winfo_screenwidth() - width) // 2)
+    y = max(0, (window.winfo_screenheight() - height) // 2)
+    window.geometry(f"{width}x{height}+{x}+{y}")
+    window.update()
+    _splash = window
+    _splash_label = label
+
+
+def splash_status(text: str) -> None:
+    if _splash is None or _splash_label is None:
+        return
+    _splash_label.configure(text=text)
+    _splash.update()
+
+
+def close_splash() -> None:
+    global _splash, _splash_label
+    if _splash is None:
+        return
+    try:
+        _splash.destroy()
+    except Exception:
+        pass
+    _splash = None
+    _splash_label = None
+
+
+def ensure() -> None:
+    """Install into .venv when needed, then start the window in its own process."""
+    if os.environ.get("KINECT_SETUP_CHILD") == "1" or _ready():
+        show_splash()
         return
     if not VENV_PYTHON.exists():
         print("Creating the Python environment in .venv", flush=True)
@@ -34,11 +86,10 @@ def ensure() -> None:
         print("Installing packages. The first run downloads PyTorch and can take several minutes.", flush=True)
         _install(VENV_PYTHON)
     if _same_interpreter(VENV_PYTHON):
+        show_splash()
         return
     print("Starting the Kinect window.", flush=True)
-    environment = os.environ.copy()
-    environment["KINECT_SETUP_CHILD"] = "1"
-    raise SystemExit(subprocess.call([str(VENV_PYTHON), *sys.argv], env=environment))
+    _handoff()
 
 
 def _ready() -> bool:
@@ -46,10 +97,30 @@ def _ready() -> bool:
 
 
 def _same_interpreter(python: Path) -> bool:
+    """True when this process is the project environment, including pythonw.exe."""
     try:
-        return Path(sys.executable).resolve() == python.resolve()
+        current = Path(sys.executable).resolve()
+        target = python.resolve()
     except OSError:
         return False
+    if current == target:
+        return True
+    return current.parent == target.parent and current.stem.lower() in {"python", "pythonw"} and target.stem.lower() in {"python", "pythonw"}
+
+
+def _handoff() -> None:
+    """Leave the console behind and open the window as its own program."""
+    pythonw = VENV_PYTHON.with_name("pythonw.exe")
+    launcher = pythonw if pythonw.exists() else VENV_PYTHON
+    environment = os.environ.copy()
+    environment["KINECT_SETUP_CHILD"] = "1"
+    subprocess.Popen(
+        [str(launcher), *sys.argv],
+        env=environment,
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        close_fds=True,
+    )
+    raise SystemExit(0)
 
 
 def _stamp_text() -> str:

@@ -555,9 +555,21 @@ class TrainerApp(ctk.CTkFrame):
 
 
 def main() -> None:
-    from kinect_app import run
+    try:
+        from kinect_app import run
 
-    run("train")
+        run("train")
+    except Exception as exc:
+        from setup_runtime import close_splash
+
+        close_splash()
+        import tkinter as tk
+        from tkinter import messagebox
+
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror("Kinect", f"The window could not open.\n\n{exc}")
+        root.destroy()
 
 
 if __name__ == "__main__":

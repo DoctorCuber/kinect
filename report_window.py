@@ -119,6 +119,42 @@ class ReportWindow(ctk.CTkToplevel):
         if self.results:
             self.list.selection_set(0)
             self._show(0)
+        self.after(20, self._take_focus)
+        self.after(300, self._take_focus)
+
+    def _take_focus(self) -> None:
+        if self._closed:
+            return
+        owner = self.master.winfo_toplevel()
+        try:
+            owner.attributes("-topmost", False)
+        except Exception:
+            owner = None
+        self.deiconify()
+        if owner is not None:
+            self.lift(owner)
+        else:
+            self.lift()
+        self.focus_force()
+        try:
+            self.attributes("-topmost", True)
+            self.after(200, self._drop_topmost)
+            import ctypes
+
+            handle = ctypes.windll.user32.GetParent(self.winfo_id())
+            ctypes.windll.user32.SetForegroundWindow(handle)
+        except Exception:
+            return
+
+    def _drop_topmost(self) -> None:
+        if self._closed:
+            return
+        try:
+            self.attributes("-topmost", False)
+            self.lift()
+            self.focus_force()
+        except Exception:
+            return
 
     def _on_select(self, _event) -> None:
         selection = self.list.curselection()

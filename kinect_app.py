@@ -5,6 +5,7 @@ import customtkinter as ctk
 from kinect_view import KinectSensor
 from sleepwalk_detector import DetectorApp
 from train_person_model import TrainerApp
+from setup_runtime import close_splash, splash_status
 from ui_kit import SECONDARY, WINDOW, AppButton, body_font, open_settings, segmented
 
 
@@ -37,6 +38,13 @@ class KinectApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<Control-comma>", lambda _event: self._open_settings())
         self.after(40, self._tick)
+        self.after(0, self._raise)
+
+    def _raise(self) -> None:
+        self.lift()
+        self.attributes("-topmost", True)
+        self.after(400, lambda: self.attributes("-topmost", False))
+        self.focus_force()
 
     def _show(self, mode: str) -> None:
         self.detect.pack_forget()
@@ -87,11 +95,13 @@ class KinectApp(ctk.CTk):
 def run(mode: str = "detect") -> int:
     ctk.set_appearance_mode("system")
     ctk.set_default_color_theme("blue")
+    splash_status("Connecting to the Kinect.")
     sensor = None
     camera_error = ""
     try:
         sensor = KinectSensor()
     except Exception as exc:
         camera_error = str(exc)
+    close_splash()
     KinectApp(sensor, camera_error, mode).mainloop()
     return 0

@@ -526,9 +526,12 @@ def main() -> int:
         )
         return 1
 
+    from setup_runtime import close_splash
+
     try:
         sensor = KinectSensor()
     except Exception as exc:
+        close_splash()
         root = tk.Tk()
         root.withdraw()
         messagebox.showerror(
@@ -540,7 +543,12 @@ def main() -> int:
         root.destroy()
         return 1
 
+    close_splash()
     app = Viewer(sensor)
+    app.lift()
+    app.attributes("-topmost", True)
+    app.after(400, lambda: app.attributes("-topmost", False))
+    app.focus_force()
     app.mainloop()
     return 0
 
