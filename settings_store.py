@@ -16,6 +16,7 @@ class Settings:
     shutter_seconds: float = 5
     min_body_span_meters: float = 0.55
     lying_height_meters: float = 0.45
+    appearance: str = "light"
 
 
 LIMITS = {
@@ -45,6 +46,8 @@ def load() -> Settings:
         except (TypeError, ValueError):
             continue
         setattr(settings, name, min(high, max(low, value)))
+    if raw.get("appearance") in {"light", "dark"}:
+        settings.appearance = raw["appearance"]
     return settings
 
 

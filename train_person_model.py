@@ -26,17 +26,23 @@ from person_check import DATASET_DIR, MODEL_PATH
 from settings_store import load as load_settings
 from ui_kit import (
     ACCENT,
+    ACCENT_HOVER,
     ACCENT_TEXT,
-    CARD,
+    CHIP,
+    GLASS_EDGE,
     PILL,
     SECONDARY,
+    SURFACE,
     TEXT,
+    WELL,
     AppButton,
     bgr_image,
     body_font,
     fit_frame,
+    glass_frame,
     plate_box,
     segmented,
+    wash_frame,
 )
 
 VIDEO_FPS = 12
@@ -205,10 +211,132 @@ def train(log=print) -> int:
     return 0
 
 
+def _load_trained(model: nn.Module) -> bool:
+    """Start from the supervised checkpoint when its classes match this trainer."""
+    if not MODEL_PATH.exists():
+        return False
+    checkpoint = torch.load(MODEL_PATH, map_location="cpu", weights_only=False)
+    if list(checkpoint.get("classes", [])) != list(CLASSES):
+        return False
+    model.load_state_dict(checkpoint["state_dict"])
+    return True
+
+
+def reinforce_epoch(model, loader, optimizer, device, baseline: float, class_weights) -> tuple[float, float, float]:
+    """One pass of REINFORCE.
+
+    The action is a class sampled from the model. The reward is the class weight
+    when that guess matches the folder the photo came from, and zero otherwise.
+    The baseline is a moving average of reward so the update follows advantage.
+    """
+    training = optimizer is not None
+    model.train(training)
+    total_loss = 0.0
+    total_reward = 0.0
+    total = 0
+    for images, labels in loader:
+        images = images.to(device)
+        labels = labels.to(device)
+        logits = model(images)
+        distribution = torch.distributions.Categorical(logits=logits)
+        if training:
+            actions = distribution.sample()
+            reward = (actions == labels).float() * class_weights[labels]
+            advantage = reward - baseline
+            loss = -(distribution.log_prob(actions) * advantage.detach()).mean()
+            loss = loss - 0.01 * distribution.entropy().mean()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            baseline = 0.95 * baseline + 0.05 * float(reward.mean().item())
+            total_loss += float(loss.item()) * labels.size(0)
+        else:
+            actions = logits.argmax(dim=1)
+            reward = (actions == labels).float()
+        total_reward += float(reward.sum().item())
+        total += int(labels.size(0))
+    return total_loss / max(total, 1), total_reward / max(total, 1), baseline
+
+
+def reinforce_train(log=print) -> int:
+    """Fine-tune the room classifier with a reward, using the captured pictures."""
+    found = collect_samples()
+    counts = {name: len(paths) for name, paths in found.items()}
+    log(
+        f"Dataset: person {counts['person']}, unfeasible {counts['unfeasible']}, empty {counts['no_person']}"
+    )
+    short = [LABEL_NAME[name] for name, count in counts.items() if count < MIN_PER_CLASS]
+    if short:
+        log(
+            f"Need at least {MIN_PER_CLASS} pictures in each folder. "
+            f"Still short: {', '.join(short)}."
+        )
+        return 1
+
+    weights = MobileNet_V3_Small_Weights.DEFAULT
+    transform = weights.transforms()
+    train_samples, test_samples = split_samples(found)
+    train_loader = DataLoader(
+        InfraredDataset(train_samples, transform),
+        batch_size=16,
+        shuffle=True,
+        num_workers=0,
+    )
+    test_loader = None
+    if test_samples:
+        test_loader = DataLoader(
+            InfraredDataset(test_samples, transform),
+            batch_size=16,
+            shuffle=False,
+            num_workers=0,
+        )
+
+    kind, label, train_device = choose_compute()
+    device = torch.device(train_device)
+    if kind == "npu":
+        log(f"No NVIDIA GPU. Reinforcement training on CPU. Clip checking will use {label}.")
+    else:
+        log(f"Reinforcement training on {label}")
+    model = build_model(len(CLASSES)).to(device)
+    if _load_trained(model):
+        log(f"Starting from the supervised checkpoint {MODEL_PATH.name}.")
+    else:
+        log("No matching supervised checkpoint. Starting from ImageNet weights.")
+    counts_list = [counts[name] for name in CLASSES]
+    class_weights = torch.tensor(
+        [sum(counts_list) / count for count in counts_list],
+        dtype=torch.float,
+        device=device,
+    )
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    baseline = 0.0
+    for epoch in range(1, 9):
+        loss, reward, baseline = reinforce_epoch(
+            model, train_loader, optimizer, device, baseline, class_weights
+        )
+        message = f"reinforce epoch {epoch}: loss {loss:.3f}  mean reward {reward:.3f}  baseline {baseline:.3f}"
+        if test_loader is not None:
+            _test_loss, accuracy, _baseline = reinforce_epoch(
+                model, test_loader, None, device, baseline, class_weights
+            )
+            message += f"  validation accuracy {accuracy:.1%}"
+        log(message)
+
+    destination = MODEL_PATH.with_name("person_classifier_rl.pt")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {"state_dict": model.state_dict(), "classes": list(CLASSES), "method": "reinforce"},
+        destination,
+    )
+    log(f"Saved {destination}")
+    log("The supervised model file was left unchanged.")
+    return 0
+
+
 def _stamp(image: np.ndarray, text: str, color: tuple[int, int, int]) -> np.ndarray:
     canvas = image.copy()
     origin = (16, 72)
-    cv2.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 0, 0), 7, cv2.LINE_AA)
+    cv2.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 1.8, (255, 255, 255), 7, cv2.LINE_AA)
     cv2.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 1.8, color, 2, cv2.LINE_AA)
     return canvas
 
@@ -233,7 +361,7 @@ class TrainerApp(ctk.CTkFrame):
         self.last_video_frame = None
         self.last_still = None
 
-        shell = ctk.CTkFrame(self, fg_color="transparent")
+        shell = wash_frame(self)
         shell.pack(fill="both", expand=True)
         ctk.CTkLabel(shell, text="Train", text_color=TEXT, font=body_font(22, "bold"), anchor="w").pack(anchor="w")
         ctk.CTkLabel(
@@ -247,11 +375,11 @@ class TrainerApp(ctk.CTkFrame):
             anchor="w",
         ).pack(anchor="w", pady=(2, 10))
 
-        self.stage = ctk.CTkFrame(shell, fg_color="#0B0B0D", corner_radius=12)
+        self.stage = glass_frame(shell, corner_radius=28)
         self.stage.pack(fill="both", expand=True)
         self.stage.pack_propagate(False)
-        self.view = ctk.CTkLabel(self.stage, text="", fg_color="#0B0B0D")
-        self.view.pack(expand=True, padx=8, pady=8)
+        self.view = ctk.CTkLabel(self.stage, text="", fg_color=WELL, corner_radius=16)
+        self.view.pack(expand=True, padx=12, pady=12)
 
         self.status = ctk.CTkLabel(shell, text="", text_color=TEXT, font=body_font(13), anchor="w")
         self.status.pack(fill="x", pady=(8, 8))
@@ -260,7 +388,7 @@ class TrainerApp(ctk.CTkFrame):
         self.label_switch.set("Person")
         self.label_switch.pack(anchor="w")
 
-        row = ctk.CTkFrame(shell, fg_color="transparent")
+        row = wash_frame(shell)
         row.pack(fill="x", pady=(8, 0))
         self.photo_button = AppButton(row, text="Photo", command=self._photo_shutter)
         self.photo_button.pack(side="left")
@@ -275,7 +403,19 @@ class TrainerApp(ctk.CTkFrame):
         self.model_label = ctk.CTkLabel(shell, text="", text_color=SECONDARY, font=body_font(12), anchor="w")
         self.model_label.pack(anchor="w", pady=(2, 8))
 
-        self.log = ctk.CTkTextbox(shell, height=160, fg_color=CARD, text_color=TEXT, font=("Consolas", 12), wrap="word")
+        self.log = ctk.CTkTextbox(
+            shell,
+            height=160,
+            fg_color=SURFACE,
+            text_color=TEXT,
+            font=("Segoe UI", 12),
+            wrap="word",
+            corner_radius=16,
+            border_width=1,
+            border_color=GLASS_EDGE,
+            scrollbar_button_color=ACCENT,
+            scrollbar_button_hover_color=ACCENT_HOVER,
+        )
         self.log.pack(fill="x", pady=(0, 0))
         self.log.configure(state="disabled")
         self._refresh()
@@ -302,7 +442,7 @@ class TrainerApp(ctk.CTkFrame):
         self.status.configure(text=f"Next photo or video will be labeled {self._label_name(kind)}.")
 
     def _style_capture_buttons(self) -> None:
-        quiet = {"fg_color": CARD, "text_color": TEXT, "state": "normal"}
+        quiet = {"fg_color": CHIP, "text_color": TEXT, "state": "normal"}
         primary = {"fg_color": ACCENT, "text_color": ACCENT_TEXT, "state": "normal"}
         grace_fill, grace_ink = PILL["grace"]
         rec_fill, rec_ink = PILL["rec"]
@@ -312,7 +452,7 @@ class TrainerApp(ctk.CTkFrame):
         if self._training:
             self.photo_button.style(state="disabled")
             self.video_button.style(state="disabled")
-            self.train_button.style(text="Training...", state="disabled", fg_color=CARD, text_color=SECONDARY)
+            self.train_button.style(text="Training...", state="disabled", fg_color=CHIP, text_color=SECONDARY)
             return
         if self.sensor is None:
             self.photo_button.style(state="disabled")
@@ -320,15 +460,15 @@ class TrainerApp(ctk.CTkFrame):
         if self.phase == "photo_wait":
             self.photo_button.style(text="Cancel Photo", fg_color=grace_fill, text_color=grace_ink)
             self.video_button.style(state="disabled")
-            self.train_button.style(state="disabled", fg_color=CARD, text_color=SECONDARY)
+            self.train_button.style(state="disabled", fg_color=CHIP, text_color=SECONDARY)
         elif self.phase == "video_wait":
             self.video_button.style(text="Cancel Video", fg_color=grace_fill, text_color=grace_ink)
             self.photo_button.style(state="disabled")
-            self.train_button.style(state="disabled", fg_color=CARD, text_color=SECONDARY)
+            self.train_button.style(state="disabled", fg_color=CHIP, text_color=SECONDARY)
         elif self.phase == "video_record":
             self.video_button.style(text="Stop Video", fg_color=rec_fill, text_color=rec_ink)
             self.photo_button.style(state="disabled")
-            self.train_button.style(state="disabled", fg_color=CARD, text_color=SECONDARY)
+            self.train_button.style(state="disabled", fg_color=CHIP, text_color=SECONDARY)
 
     def _label_name(self, kind: str) -> str:
         return LABEL_NAME[kind]
@@ -424,12 +564,12 @@ class TrainerApp(ctk.CTkFrame):
         visible = draw_joints(raw, self.sensor.bodies, "depth") if self.sensor is not None else raw
         if self.phase in {"photo_wait", "video_wait"}:
             remaining = int(self.armed_for) - int(now - self.arm_at)
-            visible = _stamp(visible, str(max(remaining, 1)), (41, 180, 240))
+            visible = _stamp(visible, str(max(remaining, 1)), (227, 113, 0))
             self.status.configure(
                 text=f"Get in place. {max(remaining, 1)} seconds. Labeled {self._label_name(self.capture_label)}."
             )
         elif self.phase == "video_record":
-            visible = _stamp(visible, "REC", (93, 93, 255))
+            visible = _stamp(visible, "REC", (227, 113, 0))
             self.status.configure(
                 text=f"Recording {self._label_name(self.capture_label)}. {self.stills_written} training pictures so far."
             )

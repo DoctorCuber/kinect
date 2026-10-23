@@ -6,7 +6,7 @@ from kinect_view import KinectSensor
 from sleepwalk_detector import DetectorApp
 from train_person_model import TrainerApp
 from setup_runtime import close_splash, splash_status
-from ui_kit import SECONDARY, WINDOW, AppButton, body_font, open_settings, segmented
+from ui_kit import SECONDARY, WINDOW, AppButton, apply_theme, body_font, mount_frost, open_settings, saved_theme, segmented, wash_frame
 
 
 class KinectApp(ctk.CTk):
@@ -20,23 +20,27 @@ class KinectApp(ctk.CTk):
         self._closed = False
         self._mode = "Detect" if mode == "detect" else "Train"
 
-        bar = ctk.CTkFrame(self, fg_color="transparent")
-        bar.pack(fill="x", padx=20, pady=(16, 8))
+        bar = wash_frame(self)
+        bar.pack(fill="x", padx=24, pady=(20, 12))
         self.switch = segmented(bar, ["Detect", "Train"], self._switch, height=32)
         self.switch.set(self._mode)
         self.switch.pack(side="left")
         self.notice = ctk.CTkLabel(bar, text="", text_color=SECONDARY, font=body_font(12))
         self.notice.pack(side="left", padx=12)
         AppButton(bar, text="Settings", command=self._open_settings).pack(side="right")
+        self.theme_switch = segmented(bar, ["Light", "Dark"], self._theme, height=32)
+        self.theme_switch.set("Dark" if saved_theme() == "dark" else "Light")
+        self.theme_switch.pack(side="right", padx=(0, 8))
 
-        self.host = ctk.CTkFrame(self, fg_color="transparent")
-        self.host.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+        self.host = wash_frame(self)
+        self.host.pack(fill="both", expand=True, padx=24, pady=(0, 20))
         self.detect = DetectorApp(self.host, sensor, camera_error)
         self.train = TrainerApp(self.host, sensor, camera_error)
         self._show(self._mode)
 
         self.protocol("WM_DELETE_WINDOW", self._close)
         self.bind("<Control-comma>", lambda _event: self._open_settings())
+        mount_frost(self)
         self.after(40, self._tick)
         self.after(0, self._raise)
 
@@ -63,6 +67,9 @@ class KinectApp(ctk.CTk):
         self.notice.configure(text="")
         self._mode = value
         self._show(value)
+
+    def _theme(self, value: str) -> None:
+        apply_theme("dark" if value == "Dark" else "light")
 
     def _open_settings(self) -> None:
         def _saved(settings) -> None:
@@ -93,8 +100,8 @@ class KinectApp(ctk.CTk):
 
 
 def run(mode: str = "detect") -> int:
-    ctk.set_appearance_mode("system")
     ctk.set_default_color_theme("blue")
+    apply_theme(saved_theme(), persist=False)
     splash_status("Connecting to the Kinect.")
     sensor = None
     camera_error = ""

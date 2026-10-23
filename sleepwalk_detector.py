@@ -23,7 +23,7 @@ from report_window import ReportWindow
 from settings_store import load as load_settings
 import customtkinter as ctk
 
-from ui_kit import PILL, SECONDARY, TEXT, AppButton, apply_list, bgr_image, body_font, fit_frame, open_settings, plate_box, segmented
+from ui_kit import PILL, SECONDARY, TEXT, WELL, AppButton, apply_list, bgr_image, body_font, fit_frame, glass_frame, open_settings, plate_box, segmented, wash_frame
 
 GRACE_SECONDS = 120
 PRE_SECONDS = 10
@@ -362,7 +362,7 @@ class DetectorApp(ctk.CTkFrame):
         self.clip_results = {}
         self._saved_seen = 0
         self._load_saved_results()
-        shell = ctk.CTkFrame(self, fg_color="transparent")
+        shell = wash_frame(self)
         shell.pack(fill="both", expand=True)
 
         ctk.CTkLabel(shell, text="Detect", text_color=TEXT, font=body_font(22, "bold"), anchor="w").pack(anchor="w")
@@ -379,16 +379,16 @@ class DetectorApp(ctk.CTkFrame):
         self.view_switch.set("Infrared + Joints")
         self.view_switch.pack(anchor="w", pady=(0, 8))
 
-        self.stage = ctk.CTkFrame(shell, fg_color="#0B0B0D", corner_radius=12)
+        self.stage = glass_frame(shell, corner_radius=28)
         self.stage.pack(fill="both", expand=True)
         self.stage.pack_propagate(False)
-        self.view = ctk.CTkLabel(self.stage, text="", fg_color="#0B0B0D")
-        self.view.pack(expand=True, padx=8, pady=8)
+        self.view = ctk.CTkLabel(self.stage, text="", fg_color=WELL, corner_radius=16)
+        self.view.pack(expand=True, padx=12, pady=12)
 
-        status_row = ctk.CTkFrame(shell, fg_color="transparent")
+        status_row = wash_frame(shell)
         status_row.pack(fill="x", pady=(12, 4))
         fill, ink = PILL["idle"]
-        self.pill = ctk.CTkLabel(status_row, text="Idle", text_color=ink, fg_color=fill, corner_radius=8, font=body_font(12, "bold"), width=96, height=24)
+        self.pill = ctk.CTkLabel(status_row, text="Idle", text_color=ink, fg_color=fill, corner_radius=16, font=body_font(12, "bold"), width=124, height=32)
         self.pill.pack(side="left")
         self.countdown = ctk.CTkLabel(status_row, text="", text_color=TEXT, font=body_font(13, "bold"))
         self.countdown.pack(side="left", padx=(12, 0))
@@ -396,7 +396,7 @@ class DetectorApp(ctk.CTkFrame):
         self.detail = ctk.CTkLabel(shell, text=self.recorder.note, text_color=SECONDARY, font=body_font(13), anchor="w")
         self.detail.pack(fill="x", pady=(4, 10))
 
-        controls = ctk.CTkFrame(shell, fg_color="transparent")
+        controls = wash_frame(shell)
         controls.pack(fill="x")
         self.start_button = AppButton(controls, text="Start Detector", command=self._start, kind="primary")
         self.start_button.pack(side="left")
@@ -411,9 +411,11 @@ class DetectorApp(ctk.CTkFrame):
         self._refresh_hint()
 
         ctk.CTkLabel(shell, text="Saved Clips", text_color=TEXT, font=body_font(15, "bold"), anchor="w").pack(anchor="w")
-        self.clips = tk.Listbox(shell, height=5, highlightthickness=0, relief="flat", font=("Segoe UI", 12), activestyle="none")
+        clip_well = glass_frame(shell, corner_radius=18, even=True)
+        clip_well.pack(fill="x", pady=(4, 0))
+        self.clips = tk.Listbox(clip_well, height=5, highlightthickness=0, relief="flat", font=("Segoe UI", 12), activestyle="none")
         apply_list(self.clips)
-        self.clips.pack(fill="x", pady=(4, 0))
+        self.clips.pack(fill="x", padx=20, pady=16)
         self._refresh_clips()
         if self.clip_results:
             self.report_button.configure(state="normal")
