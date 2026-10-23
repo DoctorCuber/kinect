@@ -37,11 +37,14 @@ def show_splash() -> None:
     window.geometry("440x150")
     window.resizable(False, False)
     window.attributes("-topmost", True)
+    window.configure(bg="#E4EEF8")
     label = tk.Label(
         window,
         text="Opening the Kinect window.\nThis can take a minute.",
         font=("Segoe UI", 13),
         justify="center",
+        bg="#E4EEF8",
+        fg="#1D1D1F",
     )
     label.pack(expand=True, fill="both", padx=24, pady=24)
     window.update_idletasks()
@@ -74,8 +77,48 @@ def close_splash() -> None:
     _splash_label = None
 
 
+def _is_admin() -> bool:
+    if os.name != "nt":
+        return True
+    import ctypes
+
+    try:
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
+
+
+def _relaunch_as_admin() -> None:
+    """Show the Windows approval prompt, then start again with administrator rights."""
+    import ctypes
+
+    executable = str(sys.executable)
+    pythonw = VENV_PYTHON.with_name("pythonw.exe")
+    if pythonw.exists() and _same_interpreter(VENV_PYTHON):
+        executable = str(pythonw)
+    script = str(Path(sys.argv[0]).resolve())
+    params = subprocess.list2cmdline([script, *sys.argv[1:]])
+    shell = ctypes.windll.shell32
+    shell.ShellExecuteW.argtypes = [
+        ctypes.c_void_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_wchar_p,
+        ctypes.c_int,
+    ]
+    shell.ShellExecuteW.restype = ctypes.c_void_p
+    result = shell.ShellExecuteW(None, "runas", executable, params, str(ROOT), 1)
+    code = result if isinstance(result, int) else 0
+    if code <= 32:
+        raise SystemExit("Administrator approval was cancelled.")
+    raise SystemExit(0)
+
+
 def ensure() -> None:
     """Install into .venv when needed, then start the window in its own process."""
+    if not _is_admin():
+        _relaunch_as_admin()
     if os.environ.get("KINECT_SETUP_CHILD") == "1" or _ready():
         show_splash()
         return

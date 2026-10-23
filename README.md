@@ -20,7 +20,7 @@ From this folder, double-click `run.bat`, or run:
 python .\sleepwalk_detector.py
 ```
 
-The first launch installs the packages into `.venv` and then opens the window. Later launches skip the install. Detect and Train are the same window. Use the switch at the top. This command opens Train instead:
+Windows asks for administrator approval each time the program starts. Choose Yes. The first launch installs the packages into `.venv` and then opens the window. Later launches skip the install. Detect and Train are the same window. Use the switch at the top. This command opens Train instead:
 
 ```powershell
 python .\train_person_model.py

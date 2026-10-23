@@ -26,6 +26,7 @@ def decide(frames: list[dict[str, float]]) -> dict:
         return {
             "label": "no_person",
             "confidence": 0.0,
+            "presence": 0.0,
             "frames": 0,
             "person_frames": 0,
         }
@@ -50,9 +51,15 @@ def decide(frames: list[dict[str, float]]) -> dict:
     else:
         label = "no_person"
         confidence = means.get("no_person", 1.0 - means.get("person", 0.0))
+    if "no_person" in means:
+        presence = 1.0 - means["no_person"]
+    else:
+        presence = means.get("person", 0.0) + means.get("unfeasible", 0.0)
+    presence = min(1.0, max(0.0, float(presence)))
     return {
         "label": label,
         "confidence": float(confidence),
+        "presence": presence,
         "frames": count,
         "person_frames": person_frames,
     }
