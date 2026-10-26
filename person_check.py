@@ -144,6 +144,20 @@ def load_model(model_path: Path = MODEL_PATH):
     return model, transform, classes, device
 
 
+def frame_call(probabilities: dict[str, float]) -> tuple[str, float, bool]:
+    """Winning label, its confidence, and whether this picture contains a person.
+
+    The person flag uses the same per-frame threshold as clip scoring. A later empty
+    frame does not change an earlier frame that cleared the threshold.
+    """
+    if not probabilities:
+        return "no_person", 0.0, False
+    label = max(probabilities, key=probabilities.get)
+    confidence = float(probabilities[label])
+    present = probabilities.get("person", 0.0) >= PERSON_THRESHOLD or probabilities.get("unfeasible", 0.0) >= PERSON_THRESHOLD
+    return label, confidence, present
+
+
 def class_probabilities(model, transform, classes: list[str], device, image_bgr: np.ndarray) -> dict[str, float]:
     if getattr(model, "uses_npu", False):
         return model.probabilities(image_bgr)

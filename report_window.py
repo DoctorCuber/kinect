@@ -1,6 +1,7 @@
 """Browse scored clips and export the set as a PDF or a CSV."""
 
 import csv
+import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ import customtkinter as ctk
 import cv2
 
 from ui_kit import SECONDARY, TEXT, WELL, WELL_TEXT, WINDOW, AppButton, apply_list, bgr_image, body_font, fit_frame, glass_frame, mount_frost, plate_box, wash_frame
-from person_check import clear_clip_history
+from person_check import class_probabilities, clear_clip_history, frame_call, load_model
 
 # Below this percent, the report says the room is empty.
 # At this percent or higher, it says someone is here.
@@ -128,13 +129,23 @@ class ReportWindow(ctk.CTkToplevel):
         self._ended = False
         self._frame_delay = 80
         self._closed = False
+        self._play_index = 0
+        self._shown_index = None
+        self._score_generation = 0
+        self._frame_calls: list[tuple[str, float, bool] | None] = []
+        self._person_seen = False
+        self._scores_complete = False
+        self._score_error = ""
+        self._model_pack = None
+        self._model_lock = threading.Lock()
+        self._score_lock = threading.Lock()
 
         shell = wash_frame(self)
         shell.pack(fill="both", expand=True, padx=24, pady=20)
         ctk.CTkLabel(shell, text="Sleepwalk Report", text_color=TEXT, font=body_font(22, "bold"), anchor="w").pack(anchor="w")
         ctk.CTkLabel(
             shell,
-            text="Each row is a clip saved when someone walked through the view. Play recording watches that video in this window. The sentence is how sure the picture is that someone is in the room. Under 15%, it says the room looks empty. At 15% or more, it says that percent sure someone is here.",
+            text="Each row is a clip saved when someone walked through the view. Play recording watches that video in this window and shows what the model calls the frame on screen. An empty frame after someone leaves does not hide that a person was in the recording. Under 15%, the saved score says the room looks empty. At 15% or more, it says that percent sure someone is here.",
             text_color=SECONDARY,
             font=body_font(13),
             wraplength=920,
@@ -242,21 +253,26 @@ class ReportWindow(ctk.CTkToplevel):
         self._stop_playback()
         self.index = index
         result = self.results[index]
-        self.detail.configure(text=describe(result))
         self.list.selection_clear(0, "end")
         self.list.selection_set(index)
         self.list.see(index)
         path = Path(result["clip"])
+        self._begin_scoring(path)
         self._open_clip(path)
         if self.capture is None:
             self._photo = None
             self._pending_frame = None
+            self._shown_index = None
             self.view.configure(image=None, text="This recording could not be opened in the report.")
+            self._update_detail()
             return
         ok, frame = self.capture.read()
+        self._shown_index = 0 if ok else None
+        self._play_index = 0
         if ok:
             self._paint_frame(frame)
         self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        self._update_detail()
 
     def _paint_frame(self, frame) -> None:
         self._pending_frame = frame
@@ -309,6 +325,7 @@ class ReportWindow(ctk.CTkToplevel):
         if self._ended:
             self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
             self._ended = False
+            self._play_index = 0
         self.playing = True
         self.play_button.style(text="Pause")
         self._advance()
@@ -321,9 +338,124 @@ class ReportWindow(ctk.CTkToplevel):
             self._ended = True
             self._stop_playback()
             self.play_button.style(text="Play recording")
+            self._update_detail()
             return
+        self._shown_index = self._play_index
+        self._play_index += 1
         self._paint_frame(frame)
+        self._update_detail()
         self.after(self._frame_delay, self._advance)
+
+    def _begin_scoring(self, path: Path) -> None:
+        """Classify every frame of this clip. A new clip cancels the previous pass."""
+        self._score_generation += 1
+        generation = self._score_generation
+        with self._score_lock:
+            self._frame_calls = []
+            self._person_seen = False
+            self._scores_complete = False
+            self._score_error = ""
+        self._shown_index = None
+        self._play_index = 0
+        threading.Thread(target=self._score_clip_frames, args=(path, generation), daemon=True).start()
+        self.after(200, lambda: self._refresh_score_text(generation))
+
+    def _score_clip_frames(self, path: Path, generation: int) -> None:
+        try:
+            model_pack = self._ensure_model()
+        except FileNotFoundError:
+            self._finish_scoring(generation, "No person model yet, so frames cannot be classified.")
+            return
+        except Exception as exc:
+            self._finish_scoring(generation, f"Frame classification failed: {exc}")
+            return
+        capture = _open_video(path)
+        if capture is None:
+            self._finish_scoring(generation, "This recording could not be classified frame by frame.")
+            return
+        count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        with self._score_lock:
+            if generation == self._score_generation:
+                self._frame_calls = [None] * count if count > 0 else []
+        index = 0
+        try:
+            while not self._closed and generation == self._score_generation:
+                ok, frame = capture.read()
+                if not ok:
+                    break
+                with self._model_lock:
+                    probabilities = class_probabilities(*model_pack, frame)
+                label, confidence, present = frame_call(probabilities)
+                with self._score_lock:
+                    if generation != self._score_generation:
+                        break
+                    if index >= len(self._frame_calls):
+                        self._frame_calls.extend([None] * (index + 1 - len(self._frame_calls)))
+                    self._frame_calls[index] = (label, confidence, present)
+                    if present:
+                        self._person_seen = True
+                index += 1
+        except Exception as exc:
+            self._finish_scoring(generation, f"Frame classification failed: {exc}")
+            return
+        finally:
+            capture.release()
+        self._finish_scoring(generation, "")
+
+    def _ensure_model(self):
+        with self._model_lock:
+            if self._model_pack is None:
+                model, transform, classes, device = load_model()
+                self._model_pack = (model, transform, classes, device)
+            return self._model_pack
+
+    def _finish_scoring(self, generation: int, error: str) -> None:
+        with self._score_lock:
+            if generation != self._score_generation:
+                return
+            if error:
+                self._score_error = error
+            self._scores_complete = True
+
+    def _refresh_score_text(self, generation: int) -> None:
+        if self._closed or generation != self._score_generation:
+            return
+        self._update_detail()
+        with self._score_lock:
+            done = self._scores_complete
+        if not done:
+            self.after(200, lambda: self._refresh_score_text(generation))
+
+    def _update_detail(self) -> None:
+        if self._closed or not self.results or self.index >= len(self.results):
+            return
+        result = self.results[self.index]
+        with self._score_lock:
+            call = None
+            shown = self._shown_index
+            if shown is not None and 0 <= shown < len(self._frame_calls):
+                call = self._frame_calls[shown]
+            person_seen = self._person_seen
+            complete = self._scores_complete
+            error = self._score_error
+        if error:
+            frame_line = error
+        elif call is None and complete:
+            frame_line = "This frame: no classification."
+        elif call is None:
+            frame_line = "This frame: scoring it now."
+        else:
+            label, confidence, _present = call
+            name = LABELS.get(label, label)
+            percent = int(round(confidence * 100))
+            frame_line = f"This frame: {name} {percent}%."
+        if person_seen:
+            anywhere = "A person was detected in this recording."
+        elif complete and not error:
+            anywhere = "No person was detected in this recording."
+        else:
+            anywhere = "Still checking every frame for a person."
+        self.detail.configure(text="\n".join((frame_line, anywhere, describe(result))))
 
     def _stop_playback(self) -> None:
         self.playing = False
@@ -348,8 +480,10 @@ class ReportWindow(ctk.CTkToplevel):
             self.on_cleared()
         else:
             clear_clip_history()
+        self._score_generation += 1
         self.results = []
         self._pending_frame = None
+        self._shown_index = None
         self.list.delete(0, "end")
         self.list.insert("end", "No clips yet.")
         self.view.configure(image=None)
@@ -483,6 +617,7 @@ class ReportWindow(ctk.CTkToplevel):
 
     def _close(self) -> None:
         self._closed = True
+        self._score_generation += 1
         self.playing = False
         if self.capture is not None:
             self.capture.release()
